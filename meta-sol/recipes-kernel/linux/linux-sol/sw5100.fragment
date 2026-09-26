@@ -1,0 +1,179 @@
+CONFIG_GOOGLE_VOTABLE=m
+CONFIG_GOOGLE_LOGBUFFER=m
+CONFIG_I2C_CHARDEV=m
+CONFIG_QCOM_RAMDUMP=m
+CONFIG_REGMAP_QTI_DEBUGFS_ALLOW_WRITE=y
+
+# cdsp-loader (drivers/soc/qcom/qdsp6v2/cdsp-loader.c) registers
+# /sys/kernel/boot_cdsp/boot. Android's init.qti.write.sh polls that
+# path with a ~90s timeout; without the driver, the oneshot service
+# eats 92s in the background. With the driver, the write goes through
+# PAS to the CDSP subsystem (or fails fast on missing firmware).
+CONFIG_MSM_CDSP_LOADER=m
+
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_VT_CONSOLE_SLEEP=y
+CONFIG_HW_CONSOLE=y
+CONFIG_CONSOLE_TRANSLATIONS=y
+CONFIG_DUMMY_CONSOLE=y
+CONFIG_LDISC_AUTOLOAD=y
+
+# Kernel-owned USB debug channel.
+CONFIG_USB_G_SERIAL=m
+CONFIG_U_SERIAL_CONSOLE=y
+
+# gcc-monaco/gdsc fail with "Failed to register GCC clocks" when
+# CONFIG_REGULATOR_PROXY_CONSUMER is set: the GDSC proxy-consumer path
+# does regulator_get(proxy) on an RPM regulator that is not up when the
+# clock controllers probe (-517, never resolves → no GCC clocks → dead
+# display + broken eMMC bus-scale → boot hang). With it unset the proxy
+# call is a no-op stub and GCC clocks register directly, matching the
+# stock device kernel. (proxy-consumer.ko is then not built.)
+# CONFIG_REGULATOR_PROXY_CONSUMER is not set
+
+# Namespaces — required by LXC for Halium.
+# monaco_GKI.config trims these (watches are RAM-constrained);
+# NAMESPACES/UTS/NET already =y so only these three are missing.
+# CONFIG_IPC_NS depends on CONFIG_SYSVIPC, which monaco_GKI ALSO trims
+# (# CONFIG_SYSVIPC is not set) — without this, olddefconfig silently
+# drops IPC_NS. SYSVIPC is a hard prerequisite of the (justified)
+# IPC_NS, and Android/LXC use SysV IPC anyway.
+CONFIG_SYSVIPC=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_IPC_NS=y
+
+# LSM primary: AppArmor, matching UBPorts's running kernel on this hardware
+# (lsm=capability,apparmor). apparmor precedes selinux in CONFIG_LSM, so the
+# exclusive-LSM logic activates apparmor and never initialises selinux: selinuxfs
+# isn't registered and the Android container sees getenforce=Disabled boots
+# fine that way (vndservicemanager, apexd-bootstrap, and the display HALs all
+# run with selinux disabled).
+CONFIG_SECURITY_APPARMOR=y
+CONFIG_SECURITY_APPARMOR_HASH=y
+CONFIG_SECURITY_APPARMOR_HASH_DEFAULT=y
+CONFIG_SECURITY_PATH=y
+CONFIG_DEFAULT_SECURITY_APPARMOR=y
+CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,apparmor,selinux,smack,tomoyo,bpf"
+
+# monaco_GKI.config sets CONFIG_QPNP_SMBLITE=m, but the kernel-tree
+# build of that driver fails — its smblite-shim.h includes
+# <misc/gvotable.h> which lives in the out-of-tree google-modules/bms
+# (Google builds qpnp-smblite as an external module via EXT_MODULES so
+# the gvotable header search path is set up via Module.symvers chaining).
+# Override to "not set" so the in-tree kernel build doesn't try this;
+# the driver is only buildable via the linux-aurora-modules EXT_MODULES
+# path once we add google-modules/bms (gvotable) and the kernel
+# drivers/power/supply/qcom as out-of-tree modules.
+# CONFIG_QCOM_POWER_SUPPLY is not set
+# CONFIG_QPNP_SMBLITE is not set
+# CONFIG_QTI_QBG is not set
+# CONFIG_MSM_SEB is not set
+# CONFIG_MSM_SEB_RPMSG is not set
+# CONFIG_MSM_SLATECOM is not set
+# CONFIG_MSM_SLATECOM_EVENT is not set
+# CONFIG_MSM_SLATECOM_INTERFACE is not set
+# CONFIG_MSM_SLATECOM_RPMSG is not set
+# CONFIG_MSM_SLATERSB is not set
+# CONFIG_MSM_SLATERSB_RPMSG is not set
+# CONFIG_QCOM_RPROC_SLATE is not set
+
+# CONFIG_RPMSG_QCOM_GLINK_SLATECOM is not set
+
+# Boot splash (psplash) via the bootloader continuous-splash buffer.
+#
+# psplash needs a legacy /dev/fb0. The SDE DRM driver deliberately has no fbdev
+# emulation, and on this command-mode panel the in-kernel drm_fb_helper modeset
+# is gated by SDE cont_splash and never lights the panel anyway. Instead, the
+# bootloader's cont_splash buffer (reserved splash_region) is *already* being
+# scanned out to the panel during boot, so qcom-cont-splash-fb (a tiny generic
+# fbdev driver, bound to an injected "qcom,cont-splash-fb" DT node) exposes that
+# live region as /dev/fb0 — psplash writes land in the buffer the display is
+# scanning and appear immediately, no DRM/modeset/kickoff.
+#
+# CONFIG_FB for the fbdev core; FRAMEBUFFER_CONSOLE stays off (EXPERT=y gates it
+# off) so nothing else draws on the splash. CONFIG_DRM_FBDEV_EMULATION is forced
+# OFF: its Kconfig default is 'y', and with it on the stock msm_drv.c references
+# msm_fbdev_init()/free() which this tree does not provide -> insmod fails.
+CONFIG_FB=y
+CONFIG_FB_QCOM_CONT_SPLASH=y
+# CONFIG_DRM_FBDEV_EMULATION is not set
+
+# Virtual HCI device — backs /dev/vhci, which bluebinder writes HCI
+# packets to so the kernel BlueZ stack sees them as if they came from a
+# real controller. The QCA BT chip on this watch is owned by the Android
+# vendor.bluetooth-1-0-qti HAL inside the LXC container; bluebinder
+# proxies binder→/dev/vhci to expose it to BlueZ on the host side. With
+# this off, /dev/vhci doesn't exist and bluebinder has nowhere to write.
+CONFIG_BT_HCIVHCI=m
+
+# --- Bluetooth core MUST be BUILT IN, not a module (GKI protected symbols) ---
+# hci_vhci above is useless on its own: it needs symbols from the bluetooth core
+# (hci_register_dev, hci_recv_frame, bt_err...), which needs rfkill. With
+# CONFIG_RFKILL=m and CONFIG_BT=m the chain cannot load at all, and the failure
+# is misleading -- modprobe reports plain "Permission denied" (EPERM):
+#     modprobe: ERROR: could not insert 'bluetooth': Permission denied
+#     insmod rfkill.ko: Permission denied
+# with lockdown=0, modules_disabled=0 and no signature enforcement, so it looks
+# like a permissions problem and is not. The kernel says what it actually is:
+#     rfkill: exports protected symbol rfkill_alloc
+# This is Android GKI symbol protection: a module may not EXPORT symbols in the
+# GKI-owned namespace. rfkill built as a module can never load on a GKI kernel,
+# no matter the permissions, so built-in is the only workable setting.
+#
+# aurora -- same SoC, working Bluetooth -- builds them in; the m-vs-y split was
+# the ONLY difference between the two configs. Verified 2026-08-15 by diffing
+# /proc/config.gz on both watches. BT_HCIVHCI stays =m on BOTH: bluebinder needs
+# it loadable, and it is not in the protected namespace.
+CONFIG_RFKILL=y
+CONFIG_BT=y
+CONFIG_BT_BCM=y
+CONFIG_BT_HCIBTSDIO=y
+CONFIG_BT_HCIUART=y
+CONFIG_BT_HIDP=y
+CONFIG_BT_QCA=y
+CONFIG_BT_RFCOMM=y
+
+# --- REQUIRED for a Linux (non-Android) userspace: /dev must be populated ---
+# sol's STOCK kernel has "# CONFIG_DEVTMPFS is not set" (verified on-device from
+# /proc/config.gz): Android never needs it, because ueventd creates every /dev node
+# itself. Our initramfs instead does `mount -t devtmpfs devtmpfs /dev`, and the
+# AsteroidOS initramfs ships ZERO static /dev nodes.
+#
+# Without devtmpfs that mount silently fails and /dev stays EMPTY, which is fatal and
+# very hard to spot: `echo ... > /dev/kmsg` then just creates a regular FILE in the
+# rootfs and succeeds, so every info() message vanishes instead of erroring, and
+# /dev/mmcblk0* never appears no matter how well the eMMC probes -- so the init hangs
+# forever in `while [ ! -e /dev/$sdcard_partition ]`.
+#
+# This is why sol CANNOT reuse the stock boot.img and must build its kernel from
+# source, exactly as aurora does.
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# --- REQUIRED for the SoC to ever sleep ---
+# Stock sets CONFIG_PM_WAKELOCKS=y but leaves PM_AUTOSLEEP unset, and Android does
+# not need it: its power HAL drives suspend itself. On this userspace nothing
+# does, so the watch never sleeps -- measured on sol AND aurora, which shows the
+# same gap:
+#
+#     suspend_stats: success=0 fail=0     (never attempted, not rejected)
+#     PM: suspend entry                   0 occurrences
+#     /sys/power/autosleep                No such file or directory
+#
+# and it stays that way off charger, genuinely discharging at 50-70 mA, with no
+# wakelock held at all.
+#
+# The wakelocks without it are decorative: PM_WAKELOCKS creates
+# /sys/power/wake_lock so mce takes and releases locks exactly as designed and
+# the counters tick, but only PM_AUTOSLEEP makes the kernel act on an empty lock
+# list. mce's own probe (libwakelock.c lwl_probe) walks state -> autosleep and
+# falls through to SUSPEND_TYPE_NONE here, because writing "on" to
+# /sys/power/state returns EINVAL on a kernel with no early-suspend framework and
+# /sys/power/autosleep does not exist to write to.
+#
+# Expect this to expose the next layer rather than finish the job: nanohub holds
+# suspend ~99% of uptime, which is decorative today and becomes a real blocker
+# the moment the kernel starts honouring it.
+CONFIG_PM_AUTOSLEEP=y
