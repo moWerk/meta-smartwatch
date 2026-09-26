@@ -1,0 +1,27 @@
+[Unit]
+Description=sol: pin the Bluetooth UART awake only while Bluetooth is on
+Documentation=man:systemd.service(5)
+ConditionPathExists=/sys/devices/platform/soc/4ac0000.qcom,qupv3_0_geni_se/4a94000.qcom,qup_uart/power/control
+# patchram brings the controller up and does the initial pin; this only takes
+# over management afterwards, and must never race its firmware download.
+After=patchram.service bluetooth.service
+Wants=patchram.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sol-bt-uart-pm.sh
+Restart=always
+RestartSec=10
+# Pin on the way out ONLY if an adapter actually exists.
+#
+# This used to pin unconditionally, on the same "losing Bluetooth is worse than
+# losing suspend" reasoning that the in-loop fallback was just fixed for -- and
+# it is the same trap in a third place. Stopping this service while no adapter
+# exists and patchram is mid-retry would pin the port, patchram cannot create
+# hci0 with the port pinned, and nothing is left running to undo it: Bluetooth
+# gone until someone notices. With an adapter present, pinning is right, because
+# an unmanaged port that suspends cannot receive.
+ExecStopPost=/bin/sh -c '[ -e /sys/class/bluetooth/hci0 ] && echo on > /sys/devices/platform/soc/4ac0000.qcom,qupv3_0_geni_se/4a94000.qcom,qup_uart/power/control 2>/dev/null; true'
+
+[Install]
+WantedBy=multi-user.target

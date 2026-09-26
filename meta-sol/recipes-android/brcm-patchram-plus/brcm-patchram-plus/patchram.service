@@ -1,0 +1,87 @@
+[Unit]
+Description=Load firmware into sol's BCM4381A1 bluetooth chip
+Documentation=man:brcm_patchram_plus(1)
+# nitrous owns the BT power/reset GPIOs and exposes them as an rfkill switch, so
+# the chip must be unblocked before we talk to it. ExecStartPre does that.
+#
+# THE CHIP ACCEPTS ONE FIRMWARE DOWNLOAD PER POWER-ON. A second attempt in the
+# same boot never gets past Download Minidriver: the chip stops answering, the
+# tool blocks in read_event, and /proc/<pid>/fdinfo shows pos=0 -- not one byte
+# of the .hcd was read. The rfkill cycle below is NOT sufficient to clear that
+# state; only a full reboot is. Verified by loading the known-good firmware the
+# same way and watching it fail identically, which is the control every retry
+# needs: without it, a same-boot retry measures a dead chip rather than the
+# change being tested.
+After=systemd-modules-load.service
+Requires=systemd-modules-load.service
+Before=bluetooth.service
+
+[Service]
+Type=simple
+# rfkill block+unblock via nitrous. Enough for a cold chip, not enough to revive
+# a half-patched one -- see the note above.
+ExecStartPre=/bin/sh -c 'for r in /sys/class/rfkill/*; do [ "$(cat $r/type)" = bluetooth ] && { echo 1 > $r/soft; sleep 1; echo 0 > $r/soft; }; done; sleep 1'
+# --patchram: BCM4381A1_SIP.hcd, the file sol's own stock config names in
+# /vendor/etc/bluetooth/bt_vendor.conf (FwPatchFileName). The non-SIP build in the
+# same directory downloads and yields a healthy hci0 that passes every HCI command
+# and never transmits: bluez enables extended advertising, the controller reports
+# success, and a scanner a foot away sees nothing. Both files are byte-identical to
+# the ones in /vendor/firmware, so the choice of file is the whole difference.
+# --use_baudrate_for_download (stock's FastDownloadDisable=false) is not required.
+#
+# --bd_addr: without it the chip falls back to 43:81:A1:xx:xx:xx, derived from its
+# own part number (4381A1), which is not a real address. sol's factory BT MAC is
+# published by the bootloader in the device tree at chosen/config/bt_addr, and
+# /persist/bluetooth/bdaddr.txt is a symlink to exactly that node. Same class of
+# fix as the bdaddr-patchram work done for nemo/bass/lenok.
+ExecStart=/bin/sh -c 'exec /usr/bin/brcm_patchram_plus --baudrate 3000000 --enable_hci --no2bytes --bd_addr "$(tr -d "\\0" < /sys/firmware/devicetree/base/chosen/config/bt_addr)" --patchram /lib/firmware/BCM4381A1_SIP.hcd /dev/ttyHS0'
+# MUST stay running: brcm_patchram_plus holds the HCI line discipline on the tty.
+# When it exits, hci0 disappears -- which cost a confusing round during bring-up
+# when a `timeout 60` wrapper silently took the adapter away.
+# THE BT UART MUST BE PINNED AWAKE -- BUT ONLY AFTER INIT. This is the whole
+# difference between "hci0 exists" and "bluetooth works", and the ordering is
+# not optional, it was established by testing both ways:
+#
+#   control=auto  during init -> patchram initialises fine, hci0 comes up
+#                                UP RUNNING with the right address, and then
+#                                EVERY live command times out (110), because
+#                                4a94000.qcom,qup_uart runtime-suspends after
+#                                its 150ms autosuspend delay and nothing resumes
+#                                it for TX. Symptom looks like a dead chip:
+#                                "command 0x200b tx timeout", LE scan fails.
+#   control=on    during init -> WORSE. brcm_patchram_plus blocks, burns ~50ms
+#                                of CPU and never creates hci0 at all. The geni
+#                                serial driver evidently needs its runtime-PM
+#                                resume path to configure the port.
+#   auto to init, THEN on      -> works. `hciconfig hci0 revision` returns
+#                                "Firmware 129.34 / 10" and LE discovery finds
+#                                real devices.
+#
+# Note the MCU's UART (4a9c000, ttyHS1) ships with control=on already, which is
+# why the sensor hub never had this problem -- a useful contrast if this ever
+# regresses.
+#
+# ExecStartPost runs after ExecStart has been spawned, by which point patchram
+# has the port; the sleep gives its init time to finish before we pin the port.
+# WAIT FOR hci0, do not guess a delay. A fixed `sleep 25` pinned the port while
+# brcm_patchram_plus was still initialising and reproduced the exact failure this
+# is meant to avoid (patchram blocks, hci0 never appears). Poll for the adapter,
+# then pin; bail out after 90s so a broken chip cannot wedge the unit forever.
+# PIN ONLY IF THE PORT CANNOT WAKE ITSELF. With the patched dtbo (wakeup IRQ
+# present) AND the two geni kernel patches, the watch now suspends with
+# Bluetooth ON -- measured 216 suspends in 487 s with the port on auto, where it
+# was 0 before. Pinning would hold a runtime-PM usage count and block suspend
+# regardless of those fixes, so leave the port alone when the IRQ is there.
+# Without the IRQ the port goes deaf while suspended, so pinning is still right.
+# sol-bt-uart-pm applies the identical test; the two must agree or they fight.
+#
+# systemd expands $VAR in Exec lines before /bin/sh sees them -- journald said
+# so ("Referenced but unset environment variable ... : i"), which degraded the
+# wait loop into a syntax error. $$i passes a literal $ through.
+ExecStartPost=/bin/sh -c 'i=0; while [ $$i -lt 90 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do sleep 1; i=$$((i+1)); done; [ -e /sys/class/bluetooth/hci0 ] || { echo "patchram: hci0 never appeared, leaving uart on auto"; exit 0; }; sleep 3; if [ "$$(wc -c < /sys/firmware/devicetree/base/soc/qcom,qupv3_0_geni_se@4ac0000/qcom,qup_uart@4a94000/interrupts-extended 2>/dev/null || echo 0)" -ge 28 ]; then echo "patchram: uart has a wakeup IRQ -- left on auto, the watch sleeps with BT on"; else echo on > /sys/devices/platform/soc/4ac0000.qcom,qupv3_0_geni_se/4a94000.qcom,qup_uart/power/control; echo "patchram: no wakeup IRQ (stock dtbo) -- BT uart pinned on after hci0 appeared ($${i}s)"; fi'
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=basic.target
