@@ -1,0 +1,9 @@
+[Unit]
+Description=sol: restore the container's /apex after Android init's namespace switch
+After=sol-lxc-android.service
+BindsTo=sol-lxc-android.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/sol-apex-restore.sh
