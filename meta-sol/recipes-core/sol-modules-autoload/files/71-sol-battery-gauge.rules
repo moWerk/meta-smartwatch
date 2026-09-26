@@ -1,0 +1,23 @@
+# Load sol's battery gauge only once QBG's IIO channels exist.
+#
+# sw5100_bms reads state of charge from QBG over IIO and resolves those channels
+# exactly ONCE, in probe, keeping a NULL list on failure without deferring:
+#
+#     iio_list = sw5100_get_ext_channels(...);
+#     if (!IS_ERR(iio_list))
+#             bms->iio_chan_list_qg = iio_list;   /* no else, no -EPROBE_DEFER */
+#
+# Probing before qti_qbg registers its IIO device therefore costs the whole
+# boot: capacity returns -ENODEV internally and -ENODATA to userspace, and the
+# UI shows -1. On sol the gauge probes at t=1.2s and QBG initialises at t=1.7s,
+# so it loses that race whenever the module is listed in a boot-phase module
+# list.
+#
+# Keying the load on the provider's own add event removes the ordering question
+# rather than re-timing it. systemd-udev-trigger replays add events for devices
+# that already exist, so this fires whether QBG appears before udev starts (the
+# normal case, it comes up in the initramfs) or after.
+#
+# The missing -EPROBE_DEFER belongs upstream in google-modules/bms; this only
+# avoids it.
+ACTION=="add", SUBSYSTEM=="iio", ATTR{name}=="*qpnp,qbg*", RUN{builtin}+="kmod load sw5100_bms"

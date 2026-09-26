@@ -1,0 +1,15 @@
+# Stable name for sol's touch digitizer.
+#
+# The compositor has to be pointed at a specific evdev node, and the event
+# number is not a stable identifier: gpio-keys is built in and always claims
+# event0, but the digitizer only appears once touch_nt383x0 is modprobed from
+# modules-load.d, so its number depends on load order relative to every other
+# input-registering driver (haptics and the nanohub sensor hub both register
+# input devices when they are enabled). aurora lands on event2 for the same
+# class of device where sol currently lands on event1 -- which is the argument
+# against hardcoding either.
+#
+# The digitizer is a virtual input device (Sysfs=/devices/virtual/input/input1),
+# so there is no /dev/input/by-path entry to use instead; matching on the
+# driver's own device name is the stable handle available.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="NVTCapacitiveTouchScreen", SYMLINK+="input/touchscreen", TAG+="systemd"
