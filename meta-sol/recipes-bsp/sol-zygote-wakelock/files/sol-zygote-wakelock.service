@@ -1,0 +1,16 @@
+[Unit]
+Description=sol: release the Android container's zygote_kwl wakelock so the watch can suspend
+Documentation=file:///usr/share/doc/sol-zygote-wakelock/README
+# The lock only exists once the container's init has run zygote at least once.
+After=sol-lxc-android.service
+Requires=sol-lxc-android.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sol-zygote-wakelock.sh
+Restart=always
+RestartSec=15
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
