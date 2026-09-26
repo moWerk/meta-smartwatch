@@ -1,0 +1,32 @@
+[Unit]
+Description=sol: boot the modem subsystem so the GNSS engine can run
+Documentation=file:///usr/libexec/sol-modem-boot.sh
+# The firmware lives in the Android vendor image, so that must be mounted. It
+# must also run AFTER sol-adsp-boot, which owns the firmware loader's search
+# path: this borrows it, starts the modem, and hands it back.
+#
+# AND IT MUST RUN AFTER THE CONTAINER. This is not tidiness, it is the difference
+# between a working watch and a reset loop. sol-unbind-modem-remoteproc exists
+# because the Android container pulls the modem up when it reaches "on boot",
+# that load fails on this unit, and Qualcomm's subsystem-restart escalates to a
+# full SoC reset (measured 2026-08-13: mss bound -> container start resets within
+# ~10s; mss unbound -> container runs fine). Binding the modem BEFORE the
+# container therefore hands it exactly the thing that kills it: enabling this
+# unit without this ordering put sol into a reset loop, uptime never past ~55s.
+#
+# Ordered after the container, the modem comes up once the container is past that
+# point -- which is precisely the by-hand sequence that has always been stable.
+After=sol-vendor-mount.service sol-adsp-boot.service sol-lxc-android.service
+Requires=sol-vendor-mount.service
+Wants=sol-lxc-android.service
+ConditionPathExists=/sys/bus/platform/drivers/qcom_q6v5_pas
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/sol-modem-boot.sh
+# No ExecStop: stopping a remoteproc is one of this port's known traceless
+# SoC-reset triggers, and there is nothing to gain from it at shutdown.
+
+[Install]
+WantedBy=multi-user.target
