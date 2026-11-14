@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Hand-written Kbuild for private/google-modules/amplifiers/cs40l26.
+#
+# WHY THIS FILE HAS TO EXIST: upstream ships ONLY BUILD.bazel (kleaf ddk_module
+# targets) plus Kconfig and defconfig -- there is no Kbuild and no Makefile in
+# that directory. This recipe drives external modules with the canonical
+# `make -C $KDIR O=$KOUT M=<dir>` loop, which has nothing to invoke without one,
+# and that -- not any missing hardware -- is why cs40l26 sat in the recipe's
+# "deliberately NOT built yet" list. Every module the recipe DOES build
+# (nanohub, bluetooth/broadcom, wlan/syna/dhd4381) ships both Kbuild and
+# Makefile; cs40l26 ships neither. Checked, not assumed.
+#
+# NOTE this also corrects a stale comment in the recipe, which claimed "the
+# module's Makefile auto-adds the -DCONFIG_INPUT_CS40L26_ATTR_UNDER_BUS +
+# -DCONFIG_GOOG_CUST defines via its own EXTRA_CFLAGS += lines". There is no
+# Makefile, so nothing was adding them. They are set explicitly below.
+#
+# Composition is taken verbatim from BUILD.bazel's ddk_module targets:
+#     cl_dsp-core.ko   <- cl_dsp.c cl_dsp-debugfs.c
+#     cs40l26-core.ko  <- cs40l26.c cs40l26-debugfs.c cs40l26-sysfs.c cs40l26-tables.c
+#     cs40l26-i2c.ko   <- cs40l26-i2c.c
+#     snd-soc-cs40l26.ko <- cs40l26-codec.c
+#
+# snd-soc-cs40l26 is the ASoC codec half. On this hardware the CS40L26 is both
+# the haptic amp and a codec on Primary MI2S: monaco-asoc-snd waits on
+# snd_cs40l26_loaded and defers its card until the codec registers, so without
+# this module there is no sound card at all. It links against the audio module
+# group, which this recipe builds.
+#
+# Load order is cl_dsp-core -> cs40l26-core -> cs40l26-i2c (each depends on the
+# previous), and the driver requests firmware (cs40l26.wmfw, cs40l26.bin,
+# cs40l26-svc.bin ...) which lives in the Android vendor image at
+# /vendor/firmware. sol-adsp-boot already points
+# /sys/module/firmware_class/parameters/path at /android/vendor/firmware, so the
+# firmware resolves with nothing extra shipped -- BUT that means these modules
+# must be loaded AFTER sol-adsp-boot has run, not from the early
+# systemd-modules-load set.
+
+ccflags-y += -DDYNAMIC_DEBUG_MODULE
+ccflags-y += -DCONFIG_INPUT_CS40L26_ATTR_UNDER_BUS
+ccflags-y += -DCONFIG_GOOG_CUST
+
+obj-m += cl_dsp-core.o
+cl_dsp-core-y := cl_dsp.o cl_dsp-debugfs.o
+
+obj-m += cs40l26-core.o
+cs40l26-core-y := cs40l26.o cs40l26-debugfs.o cs40l26-sysfs.o cs40l26-tables.o
+
+obj-m += cs40l26-i2c.o
+
+obj-m += snd-soc-cs40l26.o
+snd-soc-cs40l26-y := cs40l26-codec.o
